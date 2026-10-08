@@ -1,0 +1,115 @@
+services:
+  code:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code
+    restart: on-failure
+    env_file:
+      - .env
+    networks:
+      - appnet
+
+  backend:
+    extends:
+      service: code
+    container_name: backend
+    ports:
+      - 8000:8000
+    restart: on-failure
+    command: sh -c "alembic upgrade head && python -m app.entrypoint.web"
+    environment:
+      - DB_HOST=postgresql
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RUNNING_IN_DOCKER=1
+    volumes:
+      - ./src/app/adapters/data/migrations/versions/:/home/app/src/app/adapters/data/migrations/versions/
+    networks:
+      - appnet
+    depends_on:
+      - postgresql
+      - redis
+
+  postgresql:
+    image: postgres:17
+    container_name: postgresql
+    expose:
+      - 5433
+    ports:
+      - 5433:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_USER=${DB_USER}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    networks:
+      - appnet
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - 6380:6379
+    networks:
+      - appnet
+    command: redis-server --bind 0.0.0.0 --requirepass "$REDIS_PASSWORD" --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    container_name: worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=postgresql
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RUNNING_IN_DOCKER=1
+    command: taskiq worker --ack-type when_saved app.entrypoint.broker:setup_taskiq_broker -fsd -tp **/jobs.py
+    depends_on:
+      - redis
+    networks:
+      - appnet
+
+  scheduler:
+    container_name: scheduler
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=postgresql
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RUNNING_IN_DOCKER=1
+    command: taskiq scheduler app.entrypoint.broker:setup_taskiq_scheduler -fsd -tp **/jobs.py
+    depends_on:
+      - redis
+    networks:
+      - appnet
+
+volumes:
+  pgdata:
+
+networks:
+  appnet:
+    driver: bridge
+    name: appnet

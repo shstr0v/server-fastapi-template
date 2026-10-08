@@ -1,0 +1,6 @@
+from app.application.common.error import ApplicationError
+
+
+class SmsSendingError(ApplicationError): ...
+
+class InvalidOtpError(ApplicationError): ...
